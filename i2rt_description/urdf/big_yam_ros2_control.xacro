@@ -43,6 +43,11 @@
     motor of its own, so robot_state_publisher computes its transform from
     gripper_joint's published state without needing one.
 
+    use_gripper:=false omits this macro's gripper_joint <ros2_control> block
+    entirely (see big_yam_linear_4310.urdf.xacro, which also skips
+    instantiating the gripper_linear_4310 URDF macro in that case) - use for
+    an arm with no gripper physically installed. Defaults to true.
+
     gripper_joint (motor 7) DOES have an entry below: motor_id/motor_type/kp/kd
     are linear_4310.yml's real hardware defaults (DM4310, kp=20.0, kd=0.5).
     direction/offset are fixed at 1.0/0.0 (not tuned per-arm like the other
@@ -94,7 +99,7 @@
     URDF's inertial model vs. this arm's real mass distribution).
   -->
   <xacro:macro name="big_yam_ros2_control"
-    params="prefix can_channel:=can0 use_mock_hardware:=false compliant_mode:=false">
+    params="prefix can_channel:=can0 use_mock_hardware:=false compliant_mode:=false use_gripper:=true">
 
     <ros2_control name="${prefix}big_yam_system" type="system">
       <hardware>
@@ -230,30 +235,32 @@
         <state_interface name="effort"/>
       </joint>
 
-      <joint name="${prefix}gripper_joint">
-        <param name="motor_id">7</param>
-        <param name="motor_type">DM4310</param>
-        <param name="kp">20.0</param>
-        <param name="kd">0.5</param>
-        <param name="direction">1.0</param>
-        <param name="offset">0.0</param>
-        <param name="gravity_comp_factor">0.0</param>
-        <param name="requires_calibration">true</param>
-        <!-- Verified against real hardware: the default polarity (1.0) paired
-             the raw hard-stops backwards; closed read back as open. -1.0
-             matches this gripper's actual motor wiring/rotation sense. -->
-        <param name="calibration_polarity">-1.0</param>
-        <param name="calibration_lower_limit_m">-0.0475</param>
-        <param name="calibration_upper_limit_m">0.0</param>
-        <command_interface name="position"/>
-        <command_interface name="velocity"/>
-        <command_interface name="effort"/>
-        <command_interface name="kp"/>
-        <command_interface name="kd"/>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
-        <state_interface name="effort"/>
-      </joint>
+      <xacro:if value="${use_gripper}">
+        <joint name="${prefix}gripper_joint">
+          <param name="motor_id">7</param>
+          <param name="motor_type">DM4310</param>
+          <param name="kp">20.0</param>
+          <param name="kd">0.5</param>
+          <param name="direction">1.0</param>
+          <param name="offset">0.0</param>
+          <param name="gravity_comp_factor">0.0</param>
+          <param name="requires_calibration">true</param>
+          <!-- Verified against real hardware: the default polarity (1.0) paired
+               the raw hard-stops backwards; closed read back as open. -1.0
+               matches this gripper's actual motor wiring/rotation sense. -->
+          <param name="calibration_polarity">-1.0</param>
+          <param name="calibration_lower_limit_m">-0.0475</param>
+          <param name="calibration_upper_limit_m">0.0</param>
+          <command_interface name="position"/>
+          <command_interface name="velocity"/>
+          <command_interface name="effort"/>
+          <command_interface name="kp"/>
+          <command_interface name="kd"/>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+          <state_interface name="effort"/>
+        </joint>
+      </xacro:if>
 
     </ros2_control>
 

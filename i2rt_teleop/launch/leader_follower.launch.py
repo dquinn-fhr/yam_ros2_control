@@ -28,19 +28,27 @@ verifying leader/follower joint-zero alignment - see leader_follower_node.cpp):
 
     ros2 launch i2rt_teleop leader_follower.launch.py use_mock_hardware:=false \\
         leader_can_channel:=can0 follower_can_channel:=can1 alignment_confirmed:=true
+
+Both arms default to having the linear_4310 gripper installed. If neither arm
+has a gripper physically attached, pass use_gripper:=false - this drops the
+gripper links/joint from both arms' URDFs, skips spawning the follower's
+gripper_controller, and disables the leader-follower node's gripper mirroring:
+
+    ros2 launch i2rt_teleop leader_follower.launch.py use_gripper:=false
 """
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
-def arm_nodes(namespace, can_channel, compliant_mode, spawn_position_controllers):
+def arm_nodes(namespace, can_channel, compliant_mode, spawn_position_controllers, use_gripper):
     urdf_file = PathJoinSubstitution(
         [FindPackageShare("i2rt_description"), "urdf", "big_yam_linear_4310.urdf.xacro"]
     )
@@ -55,6 +63,8 @@ def arm_nodes(namespace, can_channel, compliant_mode, spawn_position_controllers
                 can_channel,
                 " compliant_mode:=",
                 compliant_mode,
+                " use_gripper:=",
+                use_gripper,
             ]
         ),
         value_type=str,
@@ -69,6 +79,7 @@ def arm_nodes(namespace, can_channel, compliant_mode, spawn_position_controllers
             executable="robot_state_publisher",
             namespace=namespace,
             parameters=[{"robot_description": robot_description}],
+            remappings=[("/tf", "tf"), ("/tf_static", "tf_static")],
         ),
         Node(
             package="controller_manager",
@@ -106,6 +117,7 @@ def arm_nodes(namespace, can_channel, compliant_mode, spawn_position_controllers
                 executable="spawner",
                 namespace=namespace,
                 arguments=["gripper_controller"],
+                condition=IfCondition(use_gripper),
             )
         )
     return nodes
@@ -154,6 +166,18 @@ def generate_launch_description():
         default_value="1.0",
         description="rad/s clamp applied to every commanded step, including the startup ramp's minimum duration.",
     )
+    use_gripper_arg = DeclareLaunchArgument(
+        "use_gripper",
+        default_value="true",
+        description=(
+            "true (default): both arms are built with the linear_4310 gripper (URDF links/joint and the "
+            "ros2_control gripper_joint interface), the follower spawns gripper_controller, and the "
+            "leader-follower node mirrors gripper position. false: bare-wrist arms with no gripper links, "
+            "joint, or controller, and gripper mirroring disabled - use when neither arm has a gripper "
+            "physically installed."
+        ),
+        choices=["true", "false"],
+    )
 
     leader_follower_node = Node(
         package="i2rt_teleop",
@@ -162,6 +186,7 @@ def generate_launch_description():
             {
                 "alignment_confirmed": LaunchConfiguration("alignment_confirmed"),
                 "max_joint_velocity": LaunchConfiguration("max_joint_velocity"),
+                "mirror_gripper": ParameterValue(LaunchConfiguration("use_gripper"), value_type=bool),
             }
         ],
         output="screen",
@@ -175,17 +200,20 @@ def generate_launch_description():
             leader_compliant_mode_arg,
             alignment_confirmed_arg,
             max_joint_velocity_arg,
+            use_gripper_arg,
             *arm_nodes(
                 "leader",
                 LaunchConfiguration("leader_can_channel"),
                 LaunchConfiguration("leader_compliant_mode"),
                 spawn_position_controllers=False,
+                use_gripper=LaunchConfiguration("use_gripper"),
             ),
             *arm_nodes(
                 "follower",
                 LaunchConfiguration("follower_can_channel"),
                 "false",
                 spawn_position_controllers=True,
+                use_gripper=LaunchConfiguration("use_gripper"),
             ),
             leader_follower_node,
         ]

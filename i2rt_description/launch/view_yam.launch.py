@@ -13,6 +13,10 @@ RViz defaults to i2rt_description/rviz/view_robot.rviz (RobotModel sourced
 from the /robot_description topic + TF + Grid, Fixed Frame "world" -- matches
 this xacro's root link). Pass rviz_config:="" to fall back to RViz's default
 unconfigured view instead, or point it at a different config entirely.
+
+Pass use_gripper:=false to check a bare-wrist URDF with no gripper links/
+joint -- see i2rt_teleop/launch/leader_follower.launch.py, which accepts the
+same argument for teleop.
 """
 
 from launch import LaunchDescription
@@ -32,6 +36,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     can_channel = LaunchConfiguration("can_channel")
     use_mock_hardware = LaunchConfiguration("use_mock_hardware")
+    use_gripper = LaunchConfiguration("use_gripper")
     use_joint_state_publisher_gui = LaunchConfiguration("use_joint_state_publisher_gui")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
@@ -50,6 +55,16 @@ def generate_launch_description():
                 "controller_manager is started by this launch file, but kept true by default "
                 "so this file never implies a real CAN connection."
             ),
+        ),
+        DeclareLaunchArgument(
+            "use_gripper",
+            default_value="true",
+            description=(
+                "Forwarded into the xacro. true (default): includes the linear_4310 gripper "
+                "links/joint. false: bare-wrist URDF with no gripper - use to check what a "
+                "no-gripper arm looks like before running teleop with use_gripper:=false."
+            ),
+            choices=["true", "false"],
         ),
         DeclareLaunchArgument(
             "use_joint_state_publisher_gui",
@@ -85,6 +100,8 @@ def generate_launch_description():
             can_channel,
             " use_mock_hardware:=",
             use_mock_hardware,
+            " use_gripper:=",
+            use_gripper,
         ]
     )
     robot_description = {

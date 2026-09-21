@@ -17,12 +17,20 @@ position cleanly with plain ros2_control first, no MoveIt/trajectory
 controller involved — add:
 
     use_mock_hardware:=false can_channel:=can0
+
+If the arm has no gripper installed, add use_gripper:=false: the URDF is
+built with no gripper links/joint, gripper_controller is not spawned, and
+the SRDF's "gripper"/"arm_gripper" groups and "gripper" end effector are
+left out of the semantic description served to move_group/RViz - only the
+"arm" group is available to plan with. See i2rt_moveit_config/config/
+i2rt.srdf's header comment for how the two SRDF variants are built.
 """
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -51,6 +59,17 @@ def generate_launch_description():
         default_value="can0",
         description="SocketCAN interface the arm is on. Ignored when use_mock_hardware:=true.",
     )
+    use_gripper_arg = DeclareLaunchArgument(
+        "use_gripper",
+        default_value="true",
+        description=(
+            "true (default): arm is built with the linear_4310 gripper - URDF links/joint, "
+            "ros2_control gripper_joint interface, gripper_controller spawner, and the SRDF's "
+            "gripper/arm_gripper groups and gripper end effector. false: bare-wrist arm with "
+            "none of the above - only the 'arm' planning group is available."
+        ),
+        choices=["true", "false"],
+    )
 
     urdf_file = PathJoinSubstitution(
         [FindPackageShare("i2rt_description"), "urdf", [LaunchConfiguration("robot"), ".urdf.xacro"]]
@@ -64,14 +83,19 @@ def generate_launch_description():
                 LaunchConfiguration("use_mock_hardware"),
                 " can_channel:=",
                 LaunchConfiguration("can_channel"),
+                " use_gripper:=",
+                LaunchConfiguration("use_gripper"),
             ]
         ),
         value_type=str,
     )
 
     moveit_config_share = get_package_share_directory("i2rt_moveit_config")
-    with open(os.path.join(moveit_config_share, "config", "i2rt.srdf")) as f:
-        robot_description_semantic = f.read()
+    srdf_file = os.path.join(moveit_config_share, "config", "i2rt.srdf")
+    robot_description_semantic = ParameterValue(
+        Command(["xacro ", srdf_file, " use_gripper:=", LaunchConfiguration("use_gripper")]),
+        value_type=str,
+    )
 
     kinematics_yaml = os.path.join(moveit_config_share, "config", "kinematics.yaml")
     joint_limits_yaml = os.path.join(moveit_config_share, "config", "joint_limits.yaml")
@@ -110,6 +134,7 @@ def generate_launch_description():
         package="controller_manager",
         executable="spawner",
         arguments=["gripper_controller"],
+        condition=IfCondition(LaunchConfiguration("use_gripper")),
     )
 
     move_group_node = Node(
@@ -155,6 +180,7 @@ def generate_launch_description():
             robot_arg,
             use_mock_hardware_arg,
             can_channel_arg,
+            use_gripper_arg,
             robot_state_publisher_node,
             controller_manager_node,
             joint_state_broadcaster_spawner,

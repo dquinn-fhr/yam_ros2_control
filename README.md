@@ -35,7 +35,7 @@ sudo ip link set can0 up type can bitrate 1000000
 
 ## Getting started
 
-Everything below defaults to **mock hardware** (`use_mock_hardware:=true`) — no CAN interface or physical arm required — so it's safe to try first. Only add `use_mock_hardware:=false` once you've confirmed the real arm holds position cleanly.
+Everything below defaults to **mock hardware** (`use_mock_hardware:=true`) — no CAN interface or physical arm required — so it's safe to try first. Only add `use_mock_hardware:=false` once you've confirmed the real arm holds position cleanly. Everything below also defaults to the arm having the linear_4310 **gripper installed** (`use_gripper:=true`); pass `use_gripper:=false` throughout if you're working with a bare-wrist arm.
 
 ### Visualize the URDF only (no ros2_control)
 
@@ -44,6 +44,11 @@ ros2 launch i2rt_description view_yam.launch.py
 ```
 Opens RViz + `joint_state_publisher_gui` sliders. No `controller_manager` is started, so this never opens a CAN connection regardless of arguments.
 
+To check what a no-gripper arm looks like before running teleop without one:
+```bash
+ros2 launch i2rt_description view_yam.launch.py use_gripper:=false
+```
+
 ### Single arm (ros2_control + MoveIt)
 
 ```bash
@@ -51,28 +56,41 @@ ros2 launch i2rt_moveit_config demo.launch.py robot:=big_yam_linear_4310
 ```
 Brings up `robot_state_publisher`, `controller_manager`, `joint_state_broadcaster`, `joint_trajectory_controller`, `gripper_controller`, `move_group`, and RViz with the MotionPlanning panel. Planning groups: `arm` (joint1-6), `gripper`, `arm_gripper`.
 
+If the arm has no gripper installed, add `use_gripper:=false`: `gripper_controller` is not spawned, and only the `arm` planning group is available (no `gripper`/`arm_gripper` groups or gripper end effector).
+```bash
+ros2 launch i2rt_moveit_config demo.launch.py robot:=big_yam_linear_4310 use_gripper:=false
+```
+
 Real hardware:
 ```bash
 ros2 launch i2rt_moveit_config demo.launch.py robot:=big_yam_linear_4310 \
     use_mock_hardware:=false can_channel:=can0
 ```
 
-Key args: `robot` (`big_yam_linear_4310` | `yam_crank_4310`, required), `use_mock_hardware` (default `true`), `can_channel` (default `can0`, ignored in mock mode).
+Key args: `robot` (`big_yam_linear_4310` | `yam_crank_4310`, required), `use_mock_hardware` (default `true`), `can_channel` (default `can0`, ignored in mock mode), `use_gripper` (default `true`; set `false` if the arm has no gripper installed).
 
 ### Teleop (dual-arm leader/follower)
 
+The leader-follower node stays inert (logs "Still inert: alignment_confirmed is false" every 10s and never commands the follower) until `alignment_confirmed:=true` is passed — this check is unconditional, not just a real-hardware thing. On real hardware only set it after physically commanding both arms to the same known pose and visually confirming they match (see leader_follower_node.cpp's startup log for the full reasoning); in mock hardware there's no physical arm to misalign, so it's safe to set right away.
+
 ```bash
-ros2 launch i2rt_teleop leader_follower.launch.py
+ros2 launch i2rt_teleop leader_follower.launch.py alignment_confirmed:=true
 ```
-Mock hardware on both arms by default. The leader is hand-backdrivable (compliant/gravity-comp only, no position controller); the follower mirrors it with a normal stiff position hold.
+Mock hardware on both arms by default, gripper included. The leader is hand-backdrivable (compliant/gravity-comp only, no position controller); the follower mirrors it with a normal stiff position hold.
+
+If neither arm has a gripper installed, still try this in mock hardware first:
+```bash
+ros2 launch i2rt_teleop leader_follower.launch.py use_gripper:=false alignment_confirmed:=true
+```
 
 Real hardware — only after independently confirming each arm holds position cleanly on its own, **and** manually verifying leader/follower joint-zero alignment:
 ```bash
 ros2 launch i2rt_teleop leader_follower.launch.py use_mock_hardware:=false \
     leader_can_channel:=can0 follower_can_channel:=can1 alignment_confirmed:=true
 ```
+Add `use_gripper:=false` to the above as well if neither arm has a gripper installed.
 
-Key args: `use_mock_hardware` (default `true`), `leader_can_channel` (default `can0`), `follower_can_channel` (default `can1`), `leader_compliant_mode` (default `true`), `alignment_confirmed` (default `false`, must be set manually on real hardware), `max_joint_velocity` (rad/s clamp, default `1.0`).
+Key args: `use_mock_hardware` (default `true`), `leader_can_channel` (default `can0`), `follower_can_channel` (default `can1`), `leader_compliant_mode` (default `true`), `alignment_confirmed` (default `false`; the node stays inert without it regardless of mock/real hardware - only skip the physical joint-zero check it describes when using mock hardware), `max_joint_velocity` (rad/s clamp, default `1.0`), `use_gripper` (default `true`; set `false` if neither arm has a gripper installed).
 
 Quick command I use:
 ```bash
