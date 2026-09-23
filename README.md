@@ -33,9 +33,11 @@ If you're driving a real arm, make sure the SocketCAN interface is up first, e.g
 sudo ip link set can0 up type can bitrate 1000000
 ```
 
-### One-time: persistent CAN interface names
+### One-time (recommended): persistent CAN interface names
 
-If you have more than one physical arm, plugging USB-CAN adapters in in a different order (or into different ports) can otherwise reassign which one gets called `can0` vs `can1`. `i2rt_description/udev/99-i2rt-can.rules` pins each adapter's interface name to its USB serial number instead, so it's stable regardless of plug order:
+**Do this before anything else if you have more than one physical arm** — it's what the rest of this README, and `arm_registry.py`'s `ARM_REGISTRY`, assume is already set up, and it's the configuration you'll want the vast majority of the time. Without it, plugging USB-CAN adapters in in a different order (or into different USB ports) can silently reassign which one gets called `can0` vs `can1`, so the wrong physical arm ends up on the channel a launch command expects.
+
+`i2rt_description/udev/99-i2rt-can.rules` fixes this by pinning each adapter's interface name to its own USB serial number instead of plug order, so it's stable no matter what order or port you plug into. Install it once per machine:
 
 ```bash
 sudo cp i2rt_description/udev/99-i2rt-can.rules /etc/udev/rules.d/
@@ -43,7 +45,16 @@ sudo udevadm control --reload-rules
 # then unplug/replug every adapter
 ```
 
-See that file's own header comment for how to identify a new/replacement adapter's serial number. This is what backs the `can_yam1`/`can_yam2`/`can_bigyam1`/`can_bigyam2` names used below and in `arm_registry.py`.
+That file currently links these specific USB serial numbers to these specific arms — this is the linkage `arm_registry.py`'s `can_channel` entries rely on, so if your adapters are the same four physical units, this is already correct as-is:
+
+| USB serial | CAN interface name | Arm |
+|---|---|---|
+| `004F0034594E501820313332` | `can_yam1` | `yam1` (standard yam) |
+| `002E005D594E501820313332` | `can_yam2` | `yam2` (standard yam) |
+| `005B003E594E501820313332` | `can_bigyam1` | `bigyam1` (big_yam) |
+| `0054002C594E501820313332` | `can_bigyam2` | `bigyam2` (big_yam) |
+
+If you're setting this up on a new machine with the *same* physical arms, just install the file as-is — the serials are tied to the hardware, not the machine. If you're adding a new or replacement adapter, see the rules file's own header comment for how to identify its serial number, then add a line for it there and a matching entry in `arm_registry.py`'s `ARM_REGISTRY` (see "Naming your arms" below) so the new arm's name, model, and channel all agree.
 
 ## Naming your arms
 
