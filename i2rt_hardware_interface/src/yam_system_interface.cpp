@@ -144,16 +144,82 @@ CallbackReturn YamSystemInterface::on_init(const hardware_interface::HardwareCom
 
   // Diagnostics + gravity model: a small internal node added to
   // controller_manager's own executor, publishing i2rt_msgs/MotorStatus at
-  // ~10 Hz and subscribing to /robot_description to build the KDL gravity
+  // ~10 Hz and subscribing to robot_description to build the KDL gravity
   // chain. See the class comment for why these live here instead of
   // dedicated broadcaster/controller plugins.
+  //
+  // Deliberately NOT given an explicit namespace here (single-arg Node
+  // constructor) - that lets it inherit whatever namespace the enclosing
+  // controller_manager PROCESS was actually launched under (none for
+  // i2rt_moveit_config/i2rt_description's single-arm launches; "leader"/
+  // "follower" for i2rt_teleop's leader_follower.launch.py), the same way
+  // controller_manager's own built-in robot_description subscription does.
+  // An earlier version passed info.name as an explicit namespace (e.g.
+  // "yam_system") instead - which does NOT compose with the process's real
+  // namespace, it replaces it - so under leader_follower.launch.py this
+  // node's actual namespace was "/yam_system" (not "/leader" or
+  // "/follower"), identical for both arms. Combined with subscribing to the
+  // ABSOLUTE topic "/robot_description" below (also namespace-immune, by
+  // definition of a leading "/"), this node never received EITHER arm's
+  // actual robot_description (published as "/leader/robot_description" /
+  // "/follower/robot_description" by their own namespaced
+  // robot_state_publisher instances) - meaning gravity_dyn_param_ never
+  // initialized and compute_gravity_torques() silently returned all-zero
+  // forever, on every leader_follower.launch.py run to date. Confirmed via
+  // real hardware symptom (2026-09-22): the arm didn't hold position at all
+  // and merely damped (kd) motion in every direction, rather than either
+  // holding correctly or fighting a wrong-signed spring - consistent with
+  // zero feed-forward, not a bad gravity_comp_factor (those were already
+  // hardware-validated separately via demo.launch.py, which never
+  // namespaces anything and was never affected by this). Fixed by dropping
+  // the explicit namespace AND switching the topic subscription to the
+  // relative "robot_description" (see below) so both correctly resolve
+  // within whatever namespace this process actually has.
   if (auto executor = params.executor.lock()) {
-    diagnostics_node_ = std::make_shared<rclcpp::Node>(info.name + "_diagnostics", info.name);
+    diagnostics_node_ = std::make_shared<rclcpp::Node>(info.name + "_diagnostics");
     diagnostics_pub_ = diagnostics_node_->create_publisher<i2rt_msgs::msg::MotorStatus>(
       "motor_feedback", rclcpp::QoS(10));
     robot_description_sub_ = diagnostics_node_->create_subscription<std_msgs::msg::String>(
-      "/robot_description", rclcpp::QoS(1).transient_local().reliable(),
+      "robot_description", rclcpp::QoS(1).transient_local().reliable(),
       [this](const std_msgs::msg::String & msg) { on_robot_description(msg); });
+
+    // Live-tunable gravity_comp_factor, one parameter per joint
+    // ("gravity_comp_factor.<joint_name>"), initialized to the URDF value
+    // parsed above - lets gravity comp be re-tuned with `ros2 param set
+    // <this node>/<the diagnostics node> gravity_comp_factor.<joint_name>
+    // <value>` while the arm is running, instead of relaunching for every
+    // trial. Purely a runtime convenience: the URDF <param> is still what
+    // takes effect on the NEXT activation if this isn't also updated there.
+    for (size_t i = 0; i < joint_names_.size(); ++i) {
+      diagnostics_node_->declare_parameter<double>(
+        "gravity_comp_factor." + joint_names_[i], gravity_comp_factor_[i]);
+    }
+    gravity_comp_factor_param_cb_handle_ = diagnostics_node_->add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        static const std::string kPrefix = "gravity_comp_factor.";
+        for (const auto & param : params) {
+          if (param.get_name().rfind(kPrefix, 0) != 0) {
+            continue;  // Not one of ours - some other node parameter, leave it alone.
+          }
+          const std::string joint_name = param.get_name().substr(kPrefix.size());
+          const auto it = std::find(joint_names_.begin(), joint_names_.end(), joint_name);
+          if (it == joint_names_.end()) {
+            result.successful = false;
+            result.reason = "Unknown joint '" + joint_name + "' in " + param.get_name();
+            continue;
+          }
+          if (param.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE) {
+            result.successful = false;
+            result.reason = param.get_name() + " must be a double";
+            continue;
+          }
+          gravity_comp_factor_[static_cast<size_t>(std::distance(joint_names_.begin(), it))] = param.as_double();
+        }
+        return result;
+      });
+
     executor->add_node(diagnostics_node_);
   } else {
     RCLCPP_WARN(
@@ -477,8 +543,9 @@ return_type YamSystemInterface::write(const rclcpp::Time & time, const rclcpp::D
 
   // Linear gain ramp from 0 at activation_time_ up to each joint's target
   // kp/kd (URDF default, or a controller's live kp/kd command once one is
-  // claimed) over gain_ramp_seconds_, then held at target. See the class
-  // comment for why this exists.
+  // claimed) AND gravity_torques[i] below, over gain_ramp_seconds_, then
+  // held at target/full strength. See the class comment's Safety paragraph
+  // for why this covers gravity torque too, not just kp/kd.
   const double elapsed_s = (time - activation_time_).seconds();
   const double ramp = gain_ramp_seconds_ > 0.0
                          ? std::clamp(elapsed_s / gain_ramp_seconds_, 0.0, 1.0)
@@ -538,7 +605,11 @@ return_type YamSystemInterface::write(const rclcpp::Time & time, const rclcpp::D
       }
     }
     const double base_torque = std::isfinite(eff_cmd) ? eff_cmd : 0.0;
-    commands_[i].torque = base_torque + gravity_torques[i];
+    // gravity_torques[i] is ramped the same as kp/kd below - see the class
+    // comment's Safety paragraph for why an instantly-full-strength gravity
+    // torque is itself a hazard when the model is imperfect and kd hasn't
+    // ramped in yet to damp the result.
+    commands_[i].torque = base_torque + gravity_torques[i] * ramp;
     // In compliant_mode, the fallback (nothing has claimed kp/kd) target is
     // exactly 0.0 for kp and this joint's own compliant_kd_ for kd - see
     // the class comment for why (matches MotorChainRobot's

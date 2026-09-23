@@ -1,0 +1,23 @@
+# Persistent CAN interface names for i2rt YAM arm CAN adapters (CANable2,
+# vendor:product 1d50:606f, gs_usb driver), pinned by each device's unique
+# USB serial number so the assigned interface name doesn't depend on
+# plug-in order or which USB port it's connected to.
+#
+# Install: sudo cp i2rt_description/udev/99-i2rt-can.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules
+#          then unplug/replug every adapter (udevadm trigger does not
+#          reliably re-run ACTION=="add" for devices that are already
+#          attached).
+#
+# To identify a new/replacement adapter's serial: unplug every other CAN
+# adapter, plug in just the one to identify, then run:
+#   udevadm info -a -p $(udevadm info -q path -p /sys/class/net/can0) | grep ATTRS{serial}
+#
+# These fixed names are what i2rt_description/launch/arm_registry.py's
+# ARM_REGISTRY entries use as each named arm's "can_channel" - keep the two
+# in sync if you add or rename an adapter here.
+
+SUBSYSTEM=="net", KERNEL=="can*", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="005B003E594E501820313332", NAME="can_bigyam1"
+SUBSYSTEM=="net", KERNEL=="can*", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="0054002C594E501820313332", NAME="can_bigyam2"
+SUBSYSTEM=="net", KERNEL=="can*", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="004F0034594E501820313332", NAME="can_yam1"
+SUBSYSTEM=="net", KERNEL=="can*", ACTION=="add", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="606f", ATTRS{serial}=="002E005D594E501820313332", NAME="can_yam2"

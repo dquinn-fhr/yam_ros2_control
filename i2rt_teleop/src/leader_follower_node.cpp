@@ -90,6 +90,38 @@ public:
   {
     mirrored_joints_ = declare_parameter<std::vector<std::string>>(
       "mirrored_joints", {"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"});
+    // Per-joint multiplier (must be 1.0 or -1.0) applied to the LEADER's
+    // reported position before it's used anywhere (startup ramp target and
+    // steady-state mirroring both read through latest_leader_positions_,
+    // where this is applied once - see leader_callback()). Each arm's own
+    // direction/offset (URDF <ros2_control> params) already corrects raw
+    // motor feedback into that arm's own URDF joint-angle convention, so
+    // joint_states from two units of the SAME arm model agree on what
+    // "positive" means for a given joint by construction. Nothing guarantees
+    // that across DIFFERENT arm models, though (e.g. yam vs big_yam) - their
+    // URDFs were independently authored (separate onshape documents; see
+    // yam_macro.xacro/big_yam_macro.xacro), so a joint can end up with
+    // opposite real-world rotation sense for the "same" positive angle
+    // between the two designs even though each is internally self-
+    // consistent. Defaults to all 1.0 (no correction) here since this is a
+    // property of which two models are actually paired, not something the
+    // node can know on its own - leader_follower.launch.py sets the real
+    // values based on leader_robot/follower_robot - see
+    // MIRROR_SIGN_FOR_MISMATCHED_PAIR there for the current values and
+    // 2026-09-22's correction history (an initial pass found joint1/joint4/
+    // joint5/joint6 needing a flip, but that predated per-unit direction
+    // being individually confirmed correct on all four physical arms;
+    // re-testing with known-good arms found joint6 itself was wrong, not a
+    // per-unit issue - corrected there). If you hit the same symptom
+    // (leader and follower visibly rotate opposite directions on a given
+    // joint) with a pairing this repo doesn't already know about, override
+    // via this parameter directly.
+    // Assumes both arms' joint-zero already means the same physical pose
+    // (true for this repo's shared "home" SRDF convention - see i2rt.srdf) -
+    // negation around a shared zero is only valid because of that, not a
+    // general transform.
+    mirror_sign_ = declare_parameter<std::vector<double>>(
+      "mirror_sign", std::vector<double>(mirrored_joints_.size(), 1.0));
     // Defaults below are big_yam's arm position limits from
     // i2rt_description/config/joint_limits_big_yam.yaml - that file's own
     // header notes they're ported from a model and not yet verified against
@@ -138,6 +170,15 @@ public:
         joint_upper_limits_.size() != mirrored_joints_.size()) {
       throw std::runtime_error(
         "joint_lower_limits/joint_upper_limits must be the same length as mirrored_joints");
+    }
+    if (mirror_sign_.size() != mirrored_joints_.size()) {
+      throw std::runtime_error("mirror_sign must be the same length as mirrored_joints");
+    }
+    for (size_t i = 0; i < mirrored_joints_.size(); ++i) {
+      if (mirror_sign_[i] != 1.0 && mirror_sign_[i] != -1.0) {
+        throw std::runtime_error("every entry in mirror_sign must be exactly 1.0 or -1.0");
+      }
+      mirror_sign_by_name_[mirrored_joints_[i]] = mirror_sign_[i];
     }
     if (mirror_rate_hz_ <= 0.0 || max_joint_velocity_ <= 0.0 || leader_timeout_s_ <= 0.0 ||
         startup_ramp_duration_s_ < 0.0 || startup_ramp_waypoints_ < 1) {
@@ -229,7 +270,14 @@ private:
   void leader_callback(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
     for (size_t i = 0; i < msg->name.size() && i < msg->position.size(); ++i) {
-      latest_leader_positions_[msg->name[i]] = msg->position[i];
+      // mirror_sign_by_name_ only has entries for mirrored_joints_ (the arm
+      // joints); anything else reported by the leader (e.g. gripper_joint,
+      // mirrored separately in gripper_mirror_tick()) passes through
+      // unscaled, since the gripper is the same physical part on every arm
+      // variant this repo supports and doesn't need this correction.
+      const auto sign_it = mirror_sign_by_name_.find(msg->name[i]);
+      const double sign = sign_it != mirror_sign_by_name_.end() ? sign_it->second : 1.0;
+      latest_leader_positions_[msg->name[i]] = sign * msg->position[i];
     }
     last_leader_msg_time_ = now();
 
@@ -457,6 +505,8 @@ private:
   std::vector<std::string> mirrored_joints_;
   std::vector<double> joint_lower_limits_;
   std::vector<double> joint_upper_limits_;
+  std::vector<double> mirror_sign_;
+  std::unordered_map<std::string, double> mirror_sign_by_name_;  // built once from mirrored_joints_/mirror_sign_
   double max_joint_velocity_ = 1.0;
   std::vector<double> max_joint_velocity_per_joint_;
   std::vector<double> max_step_per_joint_;  // precomputed: velocity limit / mirror_rate_hz_, per joint

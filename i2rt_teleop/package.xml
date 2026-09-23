@@ -22,6 +22,12 @@
   <depend>trajectory_msgs</depend>
   <depend>control_msgs</depend>
 
+  <!-- leader_follower.launch.py imports i2rt_description/launch/arm_registry.py
+       at launch time (via get_package_share_directory + sys.path), for the
+       shared per-arm-name robot/can_channel/gravity_comp_factor-override
+       registry - see that module's docstring. -->
+  <exec_depend>i2rt_description</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

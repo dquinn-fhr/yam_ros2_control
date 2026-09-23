@@ -39,11 +39,29 @@ namespace i2rt_hardware_interface
 // write() cycle from a KDL chain (parsed from the /robot_description topic
 // this class subscribes to internally) via KDL::ChainDynParam::JntToGravity,
 // scaled by each joint's "gravity_comp_factor" URDF param and clamped to
-// +/-max_gravity_torque_nm. This is unconditional — added on top of whatever
-// the effort command interface requests (0 if unclaimed) — mirroring
-// MotorChainRobot.update()'s `motor_torques = joint_commands.torques + g *
-// gravity_comp_factor` in the Python reference, which is active in every
-// control mode, not just an idle mode.
+// +/-max_gravity_torque_nm. Added on top of whatever the effort command
+// interface requests (0 if unclaimed) — mirroring MotorChainRobot.update()'s
+// `motor_torques = joint_commands.torques + g * gravity_comp_factor` in the
+// Python reference, which is active in every control mode, not just an idle
+// mode. gravity_comp_factor_ is also live-tunable per joint (not just a
+// startup-only URDF read) via a "gravity_comp_factor.<joint_name>" parameter
+// on diagnostics_node_ (see on_init()) — that node takes its namespace from
+// whatever the enclosing controller_manager PROCESS was actually launched
+// under (deliberately NOT an explicit override - see on_init()'s comment
+// there for why that matters), so its fully-qualified name is
+// "/<info.name>_diagnostics" for a non-namespaced launch (e.g.
+// "/yam_system_diagnostics" for this repo's single-arm launches, prefix=""),
+// or "/<namespace>/<info.name>_diagnostics" under a namespaced one (e.g.
+// "/leader/yam_system_diagnostics" for i2rt_teleop's leader_follower.launch.py's
+// leader). e.g. `ros2 param set /yam_system_diagnostics
+// gravity_comp_factor.joint3 0.5` (single-arm) takes effect on the very next
+// write() cycle, no relaunch needed. Added
+// specifically to make empirical re-tuning practical; the URDF <param> is
+// still what a fresh activation starts from, so update that too once a
+// value is validated, or it reverts on next relaunch. Like kp/kd (see
+// Safety below), this is ramped from 0 on activation rather than applied at
+// full strength instantly — see that paragraph for
+// why.
 //
 // Per-motor diagnostics (temperature, error code) that don't fit
 // sensor_msgs/JointState are published directly on an internal rclcpp::Node
@@ -51,13 +69,27 @@ namespace i2rt_hardware_interface
 // dedicated broadcaster-controller plugin. The same internal node is reused
 // to subscribe to /robot_description for the gravity model.
 //
-// Safety: kp/kd are ramped linearly from 0 up to each joint's target gain
-// over gain_ramp_seconds_ (default 1.5s) starting from every on_activate(),
-// rather than commanding full gain instantly. This bounds how hard the arm
-// can snap toward its hold command if the very first position reading after
-// enable is ever wrong (bad config, transient CAN glitch, etc.) — added
-// after a big_yam unit briefly moved at high speed on activation when it was
-// mistakenly brought up with the standard yam's motor/gain config.
+// Safety: kp/kd AND gravity_torques (see above) are all ramped linearly from
+// 0 up to their target value over gain_ramp_seconds_ (default 1.5s) starting
+// from every on_activate(), rather than commanding full gain/torque
+// instantly. kp/kd ramping bounds how hard the arm can snap toward its hold
+// command if the very first position reading after enable is ever wrong (bad
+// config, transient CAN glitch, etc.) — added after a big_yam unit briefly
+// moved at high speed on activation when it was mistakenly brought up with
+// the standard yam's motor/gain config. Gravity torque was originally
+// exempted from this ramp (applied at full strength from the first cycle,
+// reasoned to be safe since it's the arm's own weight, not an arbitrary
+// command) but that turned out to be its own hazard: since kd is still
+// ramping in over the same window, there's very little damping available to
+// arrest the arm if gravity_comp_factor/the URDF's inertial model is even
+// moderately wrong for the real arm — confirmed directly (2026-09-22): a yam
+// unit visibly jumped to an unexpected pose and held there on every
+// activation in compliant_mode, before gravity ramping was added. Ramping
+// gravity torque in lockstep with kd fixes this regardless of how accurate
+// the model ends up being, at the cost of a brief (< gain_ramp_seconds_)
+// under-supported window right after activation where the arm isn't fully
+// held against its own weight yet - same accepted tradeoff kp/kd's ramp
+// already makes for position-holding.
 //
 // compliant_mode (hardware param, default false): mirrors
 // MotorChainRobot's zero_gravity_mode (i2rt/robots/motor_chain_robot.py,
@@ -218,6 +250,11 @@ private:
   rclcpp::Node::SharedPtr diagnostics_node_;
   rclcpp::Publisher<i2rt_msgs::msg::MotorStatus>::SharedPtr diagnostics_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr robot_description_sub_;
+  // Live-tunable mirror of each joint's "gravity_comp_factor" URDF param -
+  // see on_init()'s declare_parameter calls below for why (fast tuning
+  // iteration without relaunching). rclcpp requires this handle to be kept
+  // alive for as long as the callback should stay registered.
+  rclcpp::Node::OnSetParametersCallbackHandle::SharedPtr gravity_comp_factor_param_cb_handle_;
   unsigned int diagnostics_publish_every_n_cycles_ = 1;
   unsigned int cycles_since_diagnostics_ = 0;
 };

@@ -22,7 +22,7 @@
 
     <!-- Driving finger (right tip). Renamed from joint8 (source's gripper->
          tip_right) to match the single "gripper_joint" name expected by
-         yam_hardware_interface.py and joint_limits.yaml. -->
+         i2rt_hardware_interface/YamSystemInterface and joint_limits.yaml. -->
     <joint name="${prefix}gripper_joint" type="prismatic">
       <origin xyz="0.0226681 -0.0450619 -0.0545599" rpy="1.5708 0 0"/>
       <parent link="${parent}"/>

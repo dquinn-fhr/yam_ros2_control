@@ -1,0 +1,339 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    ros2_control hardware description for a standard yam arm + linear_4310
+    gripper on a single CAN bus, driven by
+    i2rt_hardware_interface/YamSystemInterface.
+
+    motor_id/motor_type/kp/kd/gravity_comp_factor/compliant_kd values below
+    are i2rt-robotics/i2rt's yam_v1.yml (i2rt/robots/config/yam_v1.yml) as of
+    2026-09-22, and this arm's gripper is the same linear_4310 unit as
+    big_yam's (i2rt/robots/config/linear_4310.yml: motor_type DM4310,
+    motor_kp 20.0, motor_kd 0.5 - arm-agnostic). Unlike big_yam (DM6248 on
+    joints1-2, DM4340 on joints3-4), this arm uses DM4340 on joints1-3 and
+    DM4310 on joints4-6 only - confirm this against the physical motors
+    before activating real hardware.
+
+    direction has been hardware-verified on two real yam units (2026-09-22):
+    joints 1-5 confirmed correct as yam_v1.yml's raw values (all 1), joint6
+    confirmed needing a flip to -1 - see that joint's own comment. Offsets
+    (all 0.0) have NOT been independently verified beyond direction - if a
+    joint's commanded vs. real position disagrees by a fixed amount rather
+    than a sign flip, check offset next.
+
+    gravity_comp_factor/compliant_kd semantics match
+    big_yam_ros2_control.xacro's macro comment exactly - see there for the
+    full explanation of compliant_mode and the gravity feed-forward.
+    gravity_comp_factor values below are NOT yam_v1.yml's raw
+    ([1.0, 1.1, 1.1, 1.2, 1.0, 1.0]) - re-tuned/hardware-verified on real
+    hardware instead, tip-to-base (joint5 to joint2), each joint's own
+    comment has the full story:
+      - joint1: untouched (1.0, yam_v1.yml's own value) - never showed a
+        problem, no re-tuning attempted.
+      - joint2: 0.9 (validated).
+      - joint3: 0.9 (validated).
+      - joint4: 0.95 (validated).
+      - joint5: 0.0 PERMANENTLY, not a placeholder - see its comment for why
+        (real hardware friction already holds it; active comp made things
+        worse). Verified on two separate physical units.
+      - joint6: untouched (1.0, yam_v1.yml's own value) - never showed a
+        problem, no re-tuning attempted.
+    Re-tuning was needed because yam_v1.yml's raw values, applied as-is,
+    caused joints 2-5 to actively fight/oscillate in compliant_mode rather
+    than just support their own weight - see the yam_ros2_control.xacro
+    section of this repo's conversation/commit history around 2026-09-22 for
+    the full diagnostic trail (symptoms, what was ruled out, the tip-to-base
+    braced testing methodology used to get clean single-joint measurements).
+
+    joint2/3/4 were re-tuned TWICE: an initial pass found joint4 apparently
+    needed a per-unit value (0.5 vs 0.45 between two units), which looked
+    like real unit-to-unit variance at the time. It wasn't - link_6 (the
+    wrist-roll link) was wrongly carrying the linear_4310 gripper's full
+    housing mesh and ~0.55 kg mass even in bare-wrist (use_gripper:=false)
+    mode (see yam_macro.xacro's link_6 comment for the evidence trail: the
+    upstream i2rt reference model has NO geometry there at all when no
+    gripper is attached). Once that was fixed, both units re-tuned to
+    IDENTICAL values (0.9/0.9/0.95) - including joint4's separate "pulls
+    toward one hard stop near center" symptom on one unit, which turned out
+    to be the same phantom-mass bug (a distal-mass modeling error shifting
+    the predicted gravity zero-crossing) and is now confirmed gone. The
+    per-unit override entries in i2rt_description/launch/arm_registry.py
+    were removed once both units converged - see that file's git history if
+    a genuine per-unit difference ever needs to be reintroduced there.
+    gravity_comp_factor is also live-tunable per joint at runtime, without
+    relaunching, via a ROS parameter on the hardware component's internal
+    diagnostics node - see yam_system_interface.hpp's class comment
+    (gravity compensation section) for the exact parameter name/usage; this
+    is how the values above were actually found.
+
+    yam_v1.yml also has a per-joint "coulomb_friction" array
+    ([0.3, 0.3, 0.3, 0.06, 0.06, 0.06]) that YamSystemInterface does not
+    currently consume at all (the upstream Python driver treats it as an
+    optional, off-by-default feed-forward term) - not wired up here, kept
+    only as a note in case gravity comp alone proves insufficient.
+
+    max_gravity_torque_nm/gravity_root_link/gravity_tip_link: kept at the
+    same default as big_yam_ros2_control.xacro (25.0 Nm, base_link/link_6) as
+    a starting point - not independently derived for this arm's (lighter)
+    mass distribution. Watch for "Gravity torque for joint '...' clamped"
+    warnings in the log on real hardware and adjust if seen; see
+    yam_system_interface.hpp's class comment.
+
+    use_gripper:=false omits this macro's gripper_joint <ros2_control> block
+    entirely (see yam_linear_4310.urdf.xacro, which also skips instantiating
+    the gripper_linear_4310 URDF macro in that case) - use for an arm with no
+    gripper physically installed. Defaults to true.
+
+    gripper_joint (motor 7) calibration_lower_limit_m/calibration_upper_limit_m
+    are copied from big_yam_ros2_control.xacro's values (same physical
+    linear_4310 gripper hardware and gripper_linear_4310.xacro finger joint
+    limits), and calibration_polarity is left at its default (1.0) since
+    big_yam's -1.0 was empirically discovered on that specific unit's wiring,
+    not derived from any config file - verify on this arm's actual gripper
+    before trusting it (see run_gripper_calibrations(), and keep the gripper
+    clear of obstructions the first time).
+
+    use_mock_hardware:=true swaps in ros2_control's built-in
+    mock_components/GenericSystem instead of the real CAN-backed plugin - see
+    big_yam_ros2_control.xacro's macro comment for the full explanation
+    (applies unchanged here).
+
+    compliant_mode:=true mirrors MotorChainRobot's zero_gravity_mode - see
+    big_yam_ros2_control.xacro's macro comment for the full explanation
+    (applies unchanged here).
+  -->
+  <xacro:macro name="yam_ros2_control"
+    params="prefix can_channel:=can0 use_mock_hardware:=false compliant_mode:=false use_gripper:=true">
+
+    <ros2_control name="${prefix}yam_system" type="system">
+      <hardware>
+        <xacro:if value="${use_mock_hardware}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+        <xacro:unless value="${use_mock_hardware}">
+          <plugin>i2rt_hardware_interface/YamSystemInterface</plugin>
+          <param name="can_channel">${can_channel}</param>
+          <param name="gravity_root_link">${prefix}base_link</param>
+          <param name="gravity_tip_link">${prefix}link_6</param>
+          <param name="max_gravity_torque_nm">25.0</param>
+          <!-- xacro coerces a "true"/"false" arg into a Python bool, which
+               would render as capitalized "True"/"False" text if
+               interpolated directly - force it back to the lowercase
+               literal YamSystemInterface's on_init actually compares
+               against. -->
+          <param name="compliant_mode">${'true' if compliant_mode else 'false'}</param>
+        </xacro:unless>
+      </hardware>
+
+      <joint name="${prefix}joint1">
+        <param name="motor_id">1</param>
+        <param name="motor_type">DM4340</param>
+        <param name="direction">1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">80.0</param>
+        <param name="kd">5.0</param>
+        <param name="gravity_comp_factor">1.0</param>
+        <param name="compliant_kd">0.1</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="${prefix}joint2">
+        <param name="motor_id">2</param>
+        <param name="motor_type">DM4340</param>
+        <param name="direction">1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">80.0</param>
+        <param name="kd">5.0</param>
+        <!-- Re-validated on real hardware (2026-09-22) after fixing
+             link_6's gripper-housing mass being wrongly present even in
+             bare-wrist (use_gripper:=false) mode - see yam_macro.xacro's
+             link_6 comment. That phantom ~0.55 kg had been the actual
+             source of what looked like unit-to-unit variance requiring
+             per-arm overrides (see i2rt_description/launch/arm_registry.py
+             history - yam1/yam2 needed different values before this fix,
+             identical values after); promoted back to this single shared
+             default once both units converged. Originally tuned via
+             tip-to-base re-tuning (braced upstream joints, live-tunable
+             gravity_comp_factor.joint2 parameter on diagnostics_node_ - see
+             this file's/the .hpp's class comment) - not yam_v1.yml's
+             original 1.1, never independently verified. -->
+        <param name="gravity_comp_factor">0.9</param>
+        <param name="compliant_kd">0.1</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="${prefix}joint3">
+        <param name="motor_id">3</param>
+        <param name="motor_type">DM4340</param>
+        <param name="direction">1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">80.0</param>
+        <param name="kd">5.0</param>
+        <!-- Re-validated on real hardware (2026-09-22) after fixing
+             link_6's gripper-housing mass being wrongly present even in
+             bare-wrist (use_gripper:=false) mode - see yam_macro.xacro's
+             link_6 comment and joint2's comment above for the full story
+             (the phantom mass was the real source of apparent unit-to-unit
+             variance; promoted back to a single shared default once yam1/
+             yam2 converged on the same value post-fix). Originally tuned
+             via tip-to-base re-tuning (braced upstream joints) - not
+             yam_v1.yml's original 1.1, never independently verified; an
+             earlier attempt starting from it (1.1->2.2->-1.1, before the
+             upstream-drift confound was understood) produced confusing,
+             unreliable results - superseded by the braced re-test. -->
+        <param name="gravity_comp_factor">0.9</param>
+        <param name="compliant_kd">0.1</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="${prefix}joint4">
+        <param name="motor_id">4</param>
+        <param name="motor_type">DM4310</param>
+        <param name="direction">1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">10.0</param>
+        <param name="kd">1.5</param>
+        <!-- Re-validated on real hardware (2026-09-22) after fixing
+             link_6's gripper-housing mass being wrongly present even in
+             bare-wrist (use_gripper:=false) mode - see yam_macro.xacro's
+             link_6 comment. This joint saw the LARGEST swing of the three
+             (0.45 -> 0.95): before the fix, this joint also exhibited a
+             real "pulls toward one hard stop near the middle of its range"
+             symptom on one unit (yam2) - consistent with the phantom distal
+             mass shifting the predicted gravity zero-crossing away from the
+             real one. Confirmed GONE after this fix, at this value, on that
+             same unit - not a compromise anymore, holds well through the
+             full range. Previously required a per-unit override (0.5 vs
+             0.45) that turned out to be the bug, not real hardware
+             variance - both units converged on 0.95 after the fix; see
+             i2rt_description/launch/arm_registry.py's history. Not
+             yam_v1.yml's original 1.2, never independently verified. -->
+        <param name="gravity_comp_factor">0.95</param>
+        <param name="compliant_kd">0.3</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="${prefix}joint5">
+        <param name="motor_id">5</param>
+        <param name="motor_type">DM4310</param>
+        <param name="direction">1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">10.0</param>
+        <param name="kd">1.5</param>
+        <!-- Gravity comp intentionally left at 0.0 PERMANENTLY (2026-09-22),
+             not a pending/temporary value like joints 2/3/4 below. Confirmed
+             on real hardware: with the motor fully unpowered (no control
+             loop of any kind, not even kd damping), this joint holds its
+             position well on its own - real mechanical friction (gearbox/
+             cable routing) not modeled anywhere in this codebase (no
+             Coulomb-friction term is implemented; see yam_v1.yml's unused
+             coulomb_friction field) is doing that work passively. Combined
+             with light real distal weight (no end effector currently
+             installed), active gravity comp here was doing more harm than
+             good: a small, imperfect feed-forward torque interacting with
+             that real, unmodeled friction produced confusing, sharply
+             nonlinear behavior when testing (mild resistance at 0.3, a full
+             runaway at 0.6 - friction stick-slip/breakaway effects, not a
+             linear response to a simple scalar). Since the joint already
+             does its job passively, don't re-enable this without new
+             evidence it's actually needed (e.g. a real end effector
+             installed that changes the weight/friction balance). -->
+        <param name="gravity_comp_factor">0.0</param>
+        <param name="compliant_kd">0.05</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <joint name="${prefix}joint6">
+        <param name="motor_id">6</param>
+        <param name="motor_type">DM4310</param>
+        <!-- Hardware-verified on two real yam units (2026-09-22): commanding
+             a rotation direction moved the joint opposite to it in RViz with
+             yam_v1.yml's raw direction of 1 - flipped to -1 to correct, same
+             kind of hardware-specific sign flip big_yam's joint4/joint6
+             needed relative to their own .yml (see this file's header
+             comment). -->
+        <param name="direction">-1</param>
+        <param name="offset">0.0</param>
+        <param name="kp">10.0</param>
+        <param name="kd">1.5</param>
+        <param name="gravity_comp_factor">1.0</param>
+        <param name="compliant_kd">0.05</param>
+        <command_interface name="position"/>
+        <command_interface name="velocity"/>
+        <command_interface name="effort"/>
+        <command_interface name="kp"/>
+        <command_interface name="kd"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+
+      <xacro:if value="${use_gripper}">
+        <joint name="${prefix}gripper_joint">
+          <param name="motor_id">7</param>
+          <param name="motor_type">DM4310</param>
+          <param name="kp">20.0</param>
+          <param name="kd">0.5</param>
+          <param name="direction">1.0</param>
+          <param name="offset">0.0</param>
+          <param name="gravity_comp_factor">0.0</param>
+          <param name="requires_calibration">true</param>
+          <!-- Not empirically verified on this arm's specific gripper unit
+               yet - big_yam's own -1.0 was only discovered by testing real
+               hardware, not derived from any config. Check open/close
+               behavior against real hardware and correct if backwards. -->
+          <param name="calibration_polarity">1.0</param>
+          <param name="calibration_lower_limit_m">-0.0475</param>
+          <param name="calibration_upper_limit_m">0.0</param>
+          <command_interface name="position"/>
+          <command_interface name="velocity"/>
+          <command_interface name="effort"/>
+          <command_interface name="kp"/>
+          <command_interface name="kd"/>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+          <state_interface name="effort"/>
+        </joint>
+      </xacro:if>
+
+    </ros2_control>
+
+  </xacro:macro>
+
+</robot>

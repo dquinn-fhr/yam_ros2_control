@@ -25,11 +25,44 @@
     values (which are +1 for both). Confirmed against real hardware: RViz
     showed joint4/6 rotating opposite the real arm before this fix.
 
-    gravity_comp_factor per joint is big_yam.yml's `gravity_comp_factor`
-    array — a per-joint scale on the KDL-computed gravity feed-forward torque
-    that YamSystemInterface adds every write() cycle (mirrors
+    gravity_comp_factor per joint below is NOT big_yam.yml's
+    `gravity_comp_factor` array ([1.0, 1.1, 1.0, 1.1, 1.0, 1.0]) - that
+    turned out not to be trustworthy as-is on real hardware, same as
+    yam_v1.yml's for the standard yam (see yam_ros2_control.xacro's header
+    comment for the full methodology this was re-tuned with). Current
+    status per joint: joint2/3/4 are tuned nonzero values from real hardware
+    (see each joint's own comment below), re-confirmed good after fixing
+    link_6's gripper-housing mesh/mass being wrongly present even in
+    bare-wrist (use_gripper:=false) mode (see yam_macro.xacro's link_6
+    comment for the full bug and evidence) - unlike the standard yam arm,
+    where that fix changed the bare-wrist mass model enough to require
+    re-tuning joints 2/3/4 (0.75/0.7/0.45 -> 0.9/0.9/0.95), this arm's
+    values held up as-is. joint1/joint6 are still 0.0, pending the same
+    re-tuning process; joint5 is 0.0 PERMANENTLY (see its own comment, not
+    pending). Each joint is a scale on the KDL-computed gravity feed-forward
+    torque that
+    YamSystemInterface adds every write() cycle (mirrors
     MotorChainRobot.update()'s `g * gravity_comp_factor` in the Python
-    reference). kp/kd are the URDF-fixed position-hold gains used whenever a
+    reference), and is live-tunable at runtime without relaunching via a
+    "gravity_comp_factor.<joint_name>" parameter on the hardware component's
+    internal diagnostics node (fully-qualified name
+    "/<prefix>big_yam_system_diagnostics" for a non-namespaced launch like
+    i2rt_moveit_config/demo.launch.py, or
+    "/<launch namespace>/<prefix>big_yam_system_diagnostics" under a
+    namespaced one like i2rt_teleop/leader_follower.launch.py - see
+    yam_system_interface.hpp's class comment, gravity compensation section,
+    for the exact usage and why the namespace behaves this way) - re-tune
+    joint by joint, tip-to-base (joint6 first,
+    joint1 last), with everything upstream of whichever joint is under test
+    physically braced/supported so each measurement is a clean, isolated
+    read rather than confounded by other joints still drooping freely; check
+    each joint's passive (fully unpowered, no control loop at all) behavior
+    first too, since at least one yam joint turned out to be dominated by
+    real mechanical friction that active comp only fought against rather
+    than helped - the same may or may not be true here. Once a value is
+    validated, write it back into this file as the new default (a live
+    `ros2 param set` change doesn't survive a relaunch on its own). kp/kd are
+    the URDF-fixed position-hold gains used whenever a
     controller doesn't claim the (also new) kp/kd command interfaces and
     compliant_mode is false — see YamSystemInterface's class comment for the
     isfinite fallback logic. compliant_kd per joint is big_yam.yml's
@@ -128,7 +161,15 @@
         <param name="offset">0.0</param>
         <param name="kp">80.0</param>
         <param name="kd">5.0</param>
-        <param name="gravity_comp_factor">1.0</param>
+        <!-- Gravity comp intentionally left DISABLED (2026-09-22), not a
+             pending placeholder - decided not to re-tune this joint, so
+             leaving it at a known-safe, if unsupportive, 0.0 rather than
+             trusting big_yam.yml's never-independently-verified 1.0. If this
+             joint ever needs real gravity support, it should go through the
+             same live-tuned, braced-test methodology as joints 2/3/4 (see
+             this file's header comment), not just have big_yam.yml's value
+             restored blindly. -->
+        <param name="gravity_comp_factor">0.0</param>
         <param name="compliant_kd">0.5</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -147,7 +188,19 @@
         <param name="offset">0.0</param>
         <param name="kp">80.0</param>
         <param name="kd">5.0</param>
-        <param name="gravity_comp_factor">1.1</param>
+        <!-- Validated on real hardware (2026-09-22), re-tuned live via the
+             gravity_comp_factor.joint2 parameter on diagnostics_node_ then
+             written back here - see this file's header comment for the
+             methodology. Not big_yam.yml's original 1.1: that value was
+             never independently verified for this arm either.
+
+             This is a SHARED file for every big_yam-model arm, not per-unit
+             - cross-checked on a second physical unit (same pattern as
+             yam_ros2_control.xacro's joint4): first unit wanted 1.0, second
+             wanted 0.975. Settled on 0.975 as the single shared value across
+             both. Re-confirmed good after fixing link_6's gripper-housing
+             mesh/mass bug (see this file's header comment). -->
+        <param name="gravity_comp_factor">0.975</param>
         <param name="compliant_kd">0.5</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -166,7 +219,16 @@
         <param name="offset">0.0</param>
         <param name="kp">80.0</param>
         <param name="kd">5.0</param>
-        <param name="gravity_comp_factor">1.0</param>
+        <!-- Validated on real hardware (2026-09-22), re-tuned live via the
+             gravity_comp_factor.joint3 parameter on diagnostics_node_ then
+             written back here - see this file's header comment for the
+             methodology. Not big_yam.yml's original 1.0: that value was
+             never independently verified for this arm either. Cross-checked
+             on a second physical unit - transferred as-is, no per-unit
+             adjustment needed (unlike joint2). Re-confirmed good after
+             fixing link_6's gripper-housing mesh/mass bug (see this file's
+             header comment). -->
+        <param name="gravity_comp_factor">0.8</param>
         <param name="compliant_kd">0.5</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -185,7 +247,18 @@
         <param name="offset">0.0</param>
         <param name="kp">40.0</param>
         <param name="kd">3.0</param>
-        <param name="gravity_comp_factor">1.1</param>
+        <!-- Validated on real hardware (2026-09-22), re-tuned live via the
+             gravity_comp_factor.joint4 parameter on diagnostics_node_ then
+             written back here - see this file's header comment for the
+             methodology. Not big_yam.yml's original 1.1: that value was
+             never independently verified for this arm either. Cross-checked
+             on a second physical unit - transferred as-is, no per-unit
+             adjustment needed (unlike joint2). Re-confirmed good after
+             fixing link_6's gripper-housing mesh/mass bug (see this file's
+             header comment) - despite the standard yam arm's equivalent
+             joint seeing the largest swing of its three after that same fix
+             (0.45->0.95), this arm's value held up as-is. -->
+        <param name="gravity_comp_factor">0.2</param>
         <param name="compliant_kd">0.3</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -204,7 +277,11 @@
         <param name="offset">0.0</param>
         <param name="kp">40.0</param>
         <param name="kd">1.5</param>
-        <param name="gravity_comp_factor">1.0</param>
+        <!-- Validated on real hardware (2026-09-22): 0.0 is the correct,
+             PERMANENT value here, not a pending placeholder - see this
+             file's header comment for the methodology. Not
+             big_yam.yml's original 1.0. -->
+        <param name="gravity_comp_factor">0.0</param>
         <param name="compliant_kd">0.1</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>
@@ -223,7 +300,9 @@
         <param name="offset">0.0</param>
         <param name="kp">10.0</param>
         <param name="kd">1.5</param>
-        <param name="gravity_comp_factor">1.0</param>
+        <!-- Gravity comp DISABLED (2026-09-22) pending re-tuning, not
+             big_yam.yml's 1.0 - see this file's header comment for why. -->
+        <param name="gravity_comp_factor">0.0</param>
         <param name="compliant_kd">0.1</param>
         <command_interface name="position"/>
         <command_interface name="velocity"/>

@@ -14,6 +14,7 @@ install(DIRECTORY
   launch
   config
   rviz
+  udev
   DESTINATION share/${PROJECT_NAME}
 )
 

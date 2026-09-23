@@ -10,7 +10,7 @@
     (the linear_4310 gripper's fingers attach directly to it with no separate flange
     link), see gripper_linear_4310.xacro.
   -->
-  <xacro:macro name="big_yam_arm" params="prefix parent *origin">
+  <xacro:macro name="big_yam_arm" params="prefix parent use_gripper:=true *origin">
 
     <!-- Joint from parent to base_link -->
     <joint name="${prefix}base_joint" type="fixed">
@@ -222,31 +222,60 @@
       <limit lower="-2.0944" upper="2.0944" effort="10" velocity="10"/>
     </joint>
 
-    <!-- Link 6 / gripper housing. Visual/collision origin and inertial carried
-         over unchanged from yam_st_urdf_with_linear_gripper's own "gripper"
-         link (same frame convention as joint6 above), see comment there. -->
-    <link name="${prefix}link_6">
-      <visual>
-        <origin xyz="-0.014 -0.0463995 0.0731" rpy="0 0 0"/>
-        <geometry>
-          <mesh filename="package://i2rt_description/meshes/linear_4310/gripper.stl"/>
-        </geometry>
-        <material name="gripper_green">
-          <color rgba="0 0.4 0 1"/>
-        </material>
-      </visual>
-      <collision>
-        <origin xyz="-0.014 -0.0463995 0.0731" rpy="0 0 0"/>
-        <geometry>
-          <mesh filename="package://i2rt_description/meshes/linear_4310/gripper.stl"/>
-        </geometry>
-      </collision>
-      <inertial>
-        <origin xyz="-3.57066e-05 0.000249371 -0.0293133" rpy="0 0 0"/>
-        <mass value="0.553219"/>
-        <inertia ixx="0.000409668" ixy="5.44942e-07" ixz="7.91266e-07" iyy="0.000324942" iyz="-4.83958e-06" izz="0.000369249"/>
-      </inertial>
-    </link>
+    <!-- Link 6. use_gripper:=true: gripper housing - visual/collision origin
+         and inertial carried over unchanged from
+         yam_st_urdf_with_linear_gripper's own "gripper" link (same frame
+         convention as joint6 above), see comment there.
+
+         use_gripper:=false: this mesh+mass is NOT the bare arm's own
+         terminal link - it's entirely the GRIPPER's own housing, wrongly
+         baked into the base arm macro unconditionally before 2026-09-22.
+         Confirmed against i2rt-robotics/i2rt's own upstream reference
+         models: the arm-only MuJoCo model has joint6's body with NO <geom>
+         at all, and the upstream no_gripper.xml gripper-slot placeholder is
+         likewise meshless with a negligible mass (1e-6 kg) - gripper.stl
+         itself only exists under
+         i2rt/robot_models/gripper/linear_4310/assets/, i.e. it's the
+         gripper's asset, not the arm's - see yam_macro.xacro's matching
+         link_6 comment for the full evidence trail. Matches that convention
+         here: near-massless, mesh-less placeholder when no gripper is
+         attached, instead of always carrying the gripper housing's real
+         ~0.55 kg - this previously made every gravity_comp_factor value
+         tuned in use_gripper:=false mode compensate for phantom mass that
+         isn't actually there on real bare-wrist hardware. -->
+    <xacro:if value="${use_gripper}">
+      <link name="${prefix}link_6">
+        <visual>
+          <origin xyz="-0.014 -0.0463995 0.0731" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="package://i2rt_description/meshes/linear_4310/gripper.stl"/>
+          </geometry>
+          <material name="gripper_green">
+            <color rgba="0 0.4 0 1"/>
+          </material>
+        </visual>
+        <collision>
+          <origin xyz="-0.014 -0.0463995 0.0731" rpy="0 0 0"/>
+          <geometry>
+            <mesh filename="package://i2rt_description/meshes/linear_4310/gripper.stl"/>
+          </geometry>
+        </collision>
+        <inertial>
+          <origin xyz="-3.57066e-05 0.000249371 -0.0293133" rpy="0 0 0"/>
+          <mass value="0.553219"/>
+          <inertia ixx="0.000409668" ixy="5.44942e-07" ixz="7.91266e-07" iyy="0.000324942" iyz="-4.83958e-06" izz="0.000369249"/>
+        </inertial>
+      </link>
+    </xacro:if>
+    <xacro:unless value="${use_gripper}">
+      <link name="${prefix}link_6">
+        <inertial>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <mass value="1e-6"/>
+          <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+        </inertial>
+      </link>
+    </xacro:unless>
 
     <!-- TCP Frame (Tool Center Point) -->
     <joint name="${prefix}tcp_joint" type="fixed">
